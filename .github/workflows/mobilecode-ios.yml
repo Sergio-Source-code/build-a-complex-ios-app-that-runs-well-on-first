@@ -1,0 +1,57 @@
+name: MobileCode iOS
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: adhoc or testflight
+        required: true
+        default: adhoc
+      bundle_id:
+        required: true
+      upload_url:
+        required: true
+      upload_token:
+        required: true
+jobs:
+  check-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Apple key (fast fail)
+        env:
+          ASC_KEY_P8_B64: ${{ secrets.MC_ASC_KEY_P8_B64 }}
+          ASC_KEY_ID: ${{ secrets.MC_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.MC_ASC_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.MC_TEAM_ID }}
+        run: |
+          for v in ASC_KEY_P8_B64 ASC_KEY_ID ASC_ISSUER_ID TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::Missing $v. Open MobileCode and re-save your Apple key."; exit 1; }
+          done
+          echo "$ASC_KEY_P8_B64" | base64 --decode > key.p8
+          echo "key file: $(wc -c < key.p8) bytes, $(wc -l < key.p8) newlines, $(tr -cd '\r' < key.p8 | wc -c) CRs"
+          echo "first line: $(head -1 key.p8 | cut -c1-40)"
+          echo "last line:  $(tail -1 key.p8 | cut -c1-40)"
+          echo "line lengths: $(awk '{print length($0)}' key.p8 | sort -n | uniq -c | tr '\n' ';')"
+          openssl pkey -in key.p8 -noout || { echo "::error::The saved Apple key is not a valid .p8. Remove it in MobileCode and add it again."; exit 1; }
+          openssl pkey -in key.p8 -noout -text | grep -qi prime256v1 || { echo "::error::The key is not an App Store Connect (P-256) key."; exit 1; }
+          echo "Key OK. Key ID $ASC_KEY_ID, Team ID $TEAM_ID, Issuer ${ASC_ISSUER_ID:0:8}…"
+          rm -f key.p8
+  build:
+    needs: check-key
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          ASC_KEY_ID: ${{ secrets.MC_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.MC_ASC_ISSUER_ID }}
+          ASC_KEY_P8_B64: ${{ secrets.MC_ASC_KEY_P8_B64 }}
+          TEAM_ID: ${{ secrets.MC_TEAM_ID }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          UPLOAD_URL: ${{ inputs.upload_url }}
+          UPLOAD_TOKEN: ${{ inputs.upload_token }}
+        run: |
+          echo "::add-mask::$UPLOAD_TOKEN"
+          xcodebuild -version; sw_vers
+          bash .mobilecode/build.sh "${{ inputs.mode }}"
